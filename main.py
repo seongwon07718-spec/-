@@ -2,7 +2,6 @@
 import os
 import discord
 from discord.ext import commands
-from discord import app_commands
 import sqlite3
 import datetime as dt
 import random
@@ -14,7 +13,6 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 DB_PATH = "licenses.db"
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
-
 
 # ========================
 # DB 초기화
@@ -43,7 +41,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-
 # ========================
 # 라이선스 코드 생성 함수
 # ========================
@@ -53,7 +50,6 @@ def generate_license(lic_type: str):
         for _ in range(3)
     )
     return f"Wind-Banner-{random_part}-{lic_type}"
-
 
 # ========================
 # 라이선스 등록 모달
@@ -109,7 +105,6 @@ class LicenseModal(discord.ui.Modal, title="라이선스 등록"):
 
         await interaction.response.send_message(f"✅ {lic_label} 라이선스 등록 완료!", ephemeral=True)
 
-
 # ========================
 # 버튼 뷰
 # ========================
@@ -117,12 +112,16 @@ class LicenseView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="등록하기", style=discord.ButtonStyle.green, custom_id="register")
+    @discord.ui.button(label="등록하기", style=discord.ButtonStyle.grey, custom_id="register")
     async def register_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(LicenseModal())
 
-    @discord.ui.button(label="내정보", style=discord.ButtonStyle.blurple, custom_id="myinfo")
-    async def myinfo_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="배너 설정", style=discord.ButtonStyle.grey, custom_id="banner_setting")
+    async def banner_setting_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("배너 설정 기능은 아직 개발 중입니다.", ephemeral=True)
+
+    @discord.ui.button(label="남은 기간", style=discord.ButtonStyle.grey, custom_id="remaining_time")
+    async def remaining_time_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         user_id = interaction.user.id
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
@@ -138,7 +137,7 @@ class LicenseView(discord.ui.View):
         activated_at = dt.datetime.fromisoformat(activated_at).strftime("%Y-%m-%d %H:%M")
 
         if lic_type == "영구":
-            embed = discord.Embed(title="📜 라이선스 정보", color=discord.Color.gold())
+            embed = discord.Embed(title="📜 라이선스 정보", color=discord.Color.grey())
             embed.add_field(name="종류", value="영구", inline=False)
             embed.add_field(name="등록일", value=activated_at, inline=False)
         else:
@@ -161,15 +160,22 @@ class LicenseView(discord.ui.View):
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    @discord.ui.button(label="가격표", style=discord.ButtonStyle.grey, custom_id="price_table")
+    async def price_table_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(title="💰 라이선스 가격표", color=discord.Color.grey())
+        embed.add_field(name="7일 라이선스", value="가격: 5000원", inline=False)
+        embed.add_field(name="30일 라이선스", value="가격: 10000원", inline=False)
+        embed.add_field(name="영구 라이선스", value="가격: 20000원", inline=False)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ========================
 # 슬래시 명령어
 # ========================
-@bot.tree.command(name="배너등록", description="배너 등록 버튼을 보여줍니다")
+@bot.tree.command(name="배너등록", description="상단 배너 등록하기")
 async def 배너등록(interaction: discord.Interaction):
+    embed = discord.Embed(title="상단 배너 등록하기", description="배너 등록을 위해 아래 버튼을 사용하세요.", color=discord.Color.grey())
     view = LicenseView()
-    await interaction.response.send_message("배너 등록하기", view=view)
-
+    await interaction.response.send_message(embed=embed, view=view)
 
 @bot.tree.command(name="코드생성", description="(관리자 전용) 라이선스 코드를 생성합니다 (7D / 30D / PERM)")
 async def 코드생성(interaction: discord.Interaction, 종류: str):
@@ -190,7 +196,6 @@ async def 코드생성(interaction: discord.Interaction, 종류: str):
 
     await interaction.response.send_message(f"✅ 생성된 코드: `{code}`", ephemeral=True)
 
-
 # ========================
 # 실행
 # ========================
@@ -203,6 +208,5 @@ async def on_ready():
     except Exception as e:
         print(f"슬래시 명령어 동기화 실패: {e}")
     print(f"✅ 로그인 성공: {bot.user}")
-
 
 bot.run(TOKEN)
