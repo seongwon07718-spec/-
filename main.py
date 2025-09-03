@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import o
+import os
 import discord
 from discord.ext import commands
 from discord import app_commands
