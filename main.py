@@ -1,144 +1,203 @@
+# -*- coding: utf-8 -*-
 import os
 import discord
-import random
-import time
 from discord.ext import commands
+from discord import app_commands
+import aiosqlite
+import datetime as dt
+import random
+import string
 
-TOKEN = os.getenv("BOT_TOKEN")
-GUILD_ID = 1406418646237974608  # 서버 ID
+# 🔑 환경변수에서 토큰 불러오기
+TOKEN = os.getenv("DISCORD_TOKEN")
 
+DB_PATH = "licenses.db"
 intents = discord.Intents.default()
-intents.message_content = True
-intents.guilds = True
-intents.members = True
-
 bot = commands.Bot(command_prefix="!", intents=intents)
-user_points = {}
-last_play_time = {}
-COOLDOWN = 600  # 5분 쿨타임 (초 단위)
 
 
-class MinesButton(discord.ui.Button):
-    def __init__(self, x, y):
-        super().__init__(label="\u200b", style=discord.ButtonStyle.secondary, row=y)
-        self.x = x
-        self.y = y
-
-    async def callback(self, interaction: discord.Interaction):
-        # 본인만 클릭 가능
-        if interaction.user != self.view.player:
-            await interaction.response.send_message("**이 게임은 당신 것이 아닙니다**", ephemeral=True)
-            return
-
-        cell = self.view.board[self.y][self.x]
-
-        # 보석 클릭
-        if cell == "💎":
-            self.label = "💎"
-            self.style = discord.ButtonStyle.success
-            self.disabled = True
-            self.view.found_gems += 1
-
-            # 모든 보석 찾음 → 게임 종료
-            if self.view.found_gems == self.view.gems_to_find:
-                user_points[interaction.user.id] = user_points.get(interaction.user.id, 0) + 1
-                for item in self.view.children:
-                    item.disabled = True
-                await interaction.response.send_message(
-                    f"🎉 축하합니다! 보석 {self.view.gems_to_find}개 모두 찾았습니다! "
-                    f"(+1점, 총 {user_points[interaction.user.id]}점)",
-                    ephemeral=True
-                )
-            else:
-                await interaction.response.send_message(
-                    f"💎 보석 발견! ({self.view.found_gems}/{self.view.gems_to_find})",
-                    ephemeral=True
-                )
-
-            await interaction.message.edit(view=self.view)
-
-        # 폭탄 클릭
-        else:
-            self.label = "💣"
-            self.style = discord.ButtonStyle.danger
-            self.disabled = True
-
-            # 전체 보드 공개
-            for item in self.view.children:
-                if isinstance(item, MinesButton) and not item.disabled:
-                    if self.view.board[item.y][item.x] == "💣":
-                        item.label = "💣"
-                        item.style = discord.ButtonStyle.secondary
-                    elif self.view.board[item.y][item.x] == "💎":
-                        item.label = "💎"
-                        item.style = discord.ButtonStyle.secondary
-                    item.disabled = True
-
-            await interaction.response.send_message(
-                f"💥 아쉽습니다! 폭탄을 뽑아 탈락했습니다.",
-                ephemeral=True
-            )
-            await interaction.message.edit(view=self.view)
-
-
-class MinesGame(discord.ui.View):
-    def __init__(self, player):
-        super().__init__(timeout=None)  # 무제한 유지
-        self.player = player
-        self.gems_to_find = 3
-        self.total_gems = 7
-        self.found_gems = 0
-
-        # 기본 보드 생성
-        self.board = [["💣" for _ in range(5)] for _ in range(5)]
-        positions = random.sample([(x, y) for y in range(5) for x in range(5)], self.total_gems)
-        for x, y in positions:
-            self.board[y][x] = "💎"
-
-        # 버튼 생성
-        for y in range(5):
-            for x in range(5):
-                self.add_item(MinesButton(x, y))
-
-
-@bot.tree.command(name="미니게임", description="5x5 보석 맞추기 게임 (30분 쿨타임)", guild=discord.Object(id=GUILD_ID))
-async def minigame(interaction: discord.Interaction):
-    now = time.time()
-    last_time = last_play_time.get(interaction.user.id, 0)
-
-    if now - last_time < COOLDOWN:
-        remaining = int(COOLDOWN - (now - last_time))
-        minutes = remaining // 60
-        seconds = remaining % 60
-        await interaction.response.send_message(
-            f"**{minutes}분 {seconds}초 후에 다시 시도하세요**",
-            ephemeral=True
+# ========================
+# DB 초기화
+# ========================
+async def init_db():
+    async with aiosqlite.connect(DB_PATH) as db:
+        # 라이선스 코드 저장용 테이블
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS license_codes (
+            code TEXT PRIMARY KEY,
+            type TEXT,
+            created_at TEXT,
+            used_by INTEGER,
+            used_at TEXT
         )
-        return
+        """)
+        # 유저별 라이선스 테이블
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS licenses (
+            user_id INTEGER PRIMARY KEY,
+            code TEXT,
+            type TEXT,
+            activated_at TEXT,
+            expires_at TEXT
+        )
+        """)
+        await db.commit()
 
-    last_play_time[interaction.user.id] = now
-    view = MinesGame(interaction.user)
 
-    await interaction.response.send_message(
-        f"**{interaction.user.mention} 님이 미니게임을 시작했습니다**"
+# ========================
+# 라이선스 코드 생성 함수
+# ========================
+def generate_license(lic_type: str):
+    random_part = "-".join(
+        ''.join(random.choices(string.ascii_uppercase + string.digits, k=5))
+        for _ in range(3)
     )
-    await interaction.channel.send(
-        f"**보석 {view.gems_to_find}개를 찾으면 포인트 하나 드립니다**\n"
-        f"**총 {view.total_gems}개의 보석이 숨겨져 있습니다**",
-        view=view
-    )
+    return f"Wind-Banner-{random_part}-{lic_type}"
 
 
-@bot.tree.command(name="포인트", description="내 포인트 확인", guild=discord.Object(id=GUILD_ID))
-async def check_points(interaction: discord.Interaction):
-    points = user_points.get(interaction.user.id, 0)
-    await interaction.response.send_message(f"**💰 현재 포인트: {points}점**", ephemeral=True)
+# ========================
+# 라이선스 등록 모달
+# ========================
+class LicenseModal(discord.ui.Modal, title="라이선스 등록"):
+    code = discord.ui.TextInput(label="라이선스 코드", placeholder="Wind-Banner-XXXXX-XXXXX-XXXXX-7D")
+
+    async def on_submit(self, interaction: discord.Interaction):
+        code = str(self.code).strip()
+        user_id = interaction.user.id
+        now = dt.datetime.utcnow()
+
+        async with aiosqlite.connect(DB_PATH) as db:
+            # 코드 존재 여부 확인
+            cur = await db.execute("SELECT type, used_by FROM license_codes WHERE code=?", (code,))
+            row = await cur.fetchone()
+
+            if not row:
+                return await interaction.response.send_message("❌ 존재하지 않는 코드입니다.", ephemeral=True)
+
+            lic_type, used_by = row
+            if used_by is not None:
+                return await interaction.response.send_message("❌ 이미 사용된 코드입니다.", ephemeral=True)
+
+            # 코드 기간 설정
+            if lic_type == "7D":
+                expires = now + dt.timedelta(days=7)
+                lic_label = "7일"
+            elif lic_type == "30D":
+                expires = now + dt.timedelta(days=30)
+                lic_label = "30일"
+            elif lic_type == "PERM":
+                expires = None
+                lic_label = "영구"
+            else:
+                expires = now + dt.timedelta(days=1)
+                lic_label = "1회용"
+
+            # 유저 라이선스 등록
+            await db.execute(
+                "REPLACE INTO licenses (user_id, code, type, activated_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+                (user_id, code, lic_label, now.isoformat(), expires.isoformat() if expires else None)
+            )
+
+            # 코드 사용 처리
+            await db.execute(
+                "UPDATE license_codes SET used_by=?, used_at=? WHERE code=?",
+                (user_id, now.isoformat(), code)
+            )
+            await db.commit()
+
+        await interaction.response.send_message(f"✅ {lic_label} 라이선스 등록 완료!", ephemeral=True)
 
 
+# ========================
+# 버튼 뷰
+# ========================
+class LicenseView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="등록하기", style=discord.ButtonStyle.green, custom_id="register")
+    async def register_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(LicenseModal())
+
+    @discord.ui.button(label="내정보", style=discord.ButtonStyle.blurple, custom_id="myinfo")
+    async def myinfo_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        user_id = interaction.user.id
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute("SELECT type, activated_at, expires_at FROM licenses WHERE user_id=?", (user_id,))
+            row = await cur.fetchone()
+
+        if not row:
+            embed = discord.Embed(title="❌ 라이선스 없음", description="등록된 라이선스가 없습니다.", color=discord.Color.red())
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        lic_type, activated_at, expires_at = row
+        activated_at = dt.datetime.fromisoformat(activated_at).strftime("%Y-%m-%d %H:%M")
+
+        if lic_type == "영구":
+            embed = discord.Embed(title="📜 라이선스 정보", color=discord.Color.gold())
+            embed.add_field(name="종류", value="영구", inline=False)
+            embed.add_field(name="등록일", value=activated_at, inline=False)
+        else:
+            exp = dt.datetime.fromisoformat(expires_at)
+            now = dt.datetime.utcnow()
+            remaining = exp - now
+
+            if remaining.total_seconds() <= 0:
+                embed = discord.Embed(title="⛔ 라이선스 만료", color=discord.Color.red())
+                embed.add_field(name="등록일", value=activated_at, inline=False)
+                embed.add_field(name="만료일", value=exp.strftime("%Y-%m-%d %H:%M"), inline=False)
+            else:
+                days = remaining.days
+                hours = remaining.seconds // 3600
+                embed = discord.Embed(title="✅ 라이선스 활성화됨", color=discord.Color.green())
+                embed.add_field(name="종류", value=lic_type, inline=False)
+                embed.add_field(name="등록일", value=activated_at, inline=False)
+                embed.add_field(name="만료일", value=exp.strftime("%Y-%m-%d %H:%M"), inline=False)
+                embed.add_field(name="남은 기간", value=f"{days}일 {hours}시간", inline=False)
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# ========================
+# 슬래시 명령어
+# ========================
+@bot.tree.command(name="배너등록", description="배너 등록 버튼을 보여줍니다")
+async def 배너등록(interaction: discord.Interaction):
+    view = LicenseView()
+    await interaction.response.send_message("배너 등록하기", view=view)
+
+
+@bot.tree.command(name="코드생성", description="(관리자 전용) 라이선스 코드를 생성합니다 (7D / 30D / PERM)")
+async def 코드생성(interaction: discord.Interaction, 종류: str):
+    # ✅ 관리자 권한 확인
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("❌ 관리자만 사용할 수 있는 명령어입니다.", ephemeral=True)
+
+    code = generate_license(종류.upper())
+    now = dt.datetime.utcnow()
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO license_codes (code, type, created_at, used_by, used_at) VALUES (?, ?, ?, NULL, NULL)",
+            (code, 종류.upper(), now.isoformat())
+        )
+        await db.commit()
+
+    await interaction.response.send_message(f"✅ 생성된 코드: `{code}`", ephemeral=True)
+
+
+# ========================
+# 실행
+# ========================
 @bot.event
 async def on_ready():
-    await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
-    print(f"✅ 로그인됨: {bot.user} | 명령어 동기화 완료!")
+    await init_db()
+    try:
+        synced = await bot.tree.sync()
+        print(f"✅ 슬래시 명령어 동기화 완료: {len(synced)}개")
+    except Exception as e:
+        print(f"슬래시 명령어 동기화 실패: {e}")
+    print(f"✅ 로그인 성공: {bot.user}")
 
 
 bot.run(TOKEN)
