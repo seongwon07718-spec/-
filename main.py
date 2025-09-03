@@ -3,7 +3,7 @@ import os
 import discord
 from discord.ext import commands
 from discord import app_commands
-import aiosqlite
+import sqlite3
 import datetime as dt
 import random
 import string
@@ -19,29 +19,29 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # ========================
 # DB 초기화
 # ========================
-async def init_db():
-    async with aiosqlite.connect(DB_PATH) as db:
-        # 라이선스 코드 저장용 테이블
-        await db.execute("""
-        CREATE TABLE IF NOT EXISTS license_codes (
-            code TEXT PRIMARY KEY,
-            type TEXT,
-            created_at TEXT,
-            used_by INTEGER,
-            used_at TEXT
-        )
-        """)
-        # 유저별 라이선스 테이블
-        await db.execute("""
-        CREATE TABLE IF NOT EXISTS licenses (
-            user_id INTEGER PRIMARY KEY,
-            code TEXT,
-            type TEXT,
-            activated_at TEXT,
-            expires_at TEXT
-        )
-        """)
-        await db.commit()
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS license_codes (
+        code TEXT PRIMARY KEY,
+        type TEXT,
+        created_at TEXT,
+        used_by INTEGER,
+        used_at TEXT
+    )
+    """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS licenses (
+        user_id INTEGER PRIMARY KEY,
+        code TEXT,
+        type TEXT,
+        activated_at TEXT,
+        expires_at TEXT
+    )
+    """)
+    conn.commit()
+    conn.close()
 
 
 # ========================
@@ -66,44 +66,46 @@ class LicenseModal(discord.ui.Modal, title="라이선스 등록"):
         user_id = interaction.user.id
         now = dt.datetime.utcnow()
 
-        async with aiosqlite.connect(DB_PATH) as db:
-            # 코드 존재 여부 확인
-            cur = await db.execute("SELECT type, used_by FROM license_codes WHERE code=?", (code,))
-            row = await cur.fetchone()
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
 
-            if not row:
-                return await interaction.response.send_message("❌ 존재하지 않는 코드입니다.", ephemeral=True)
+        cur.execute("SELECT type, used_by FROM license_codes WHERE code=?", (code,))
+        row = cur.fetchone()
 
-            lic_type, used_by = row
-            if used_by is not None:
-                return await interaction.response.send_message("❌ 이미 사용된 코드입니다.", ephemeral=True)
+        if not row:
+            return await interaction.response.send_message("❌ 존재하지 않는 코드입니다.", ephemeral=True)
 
-            # 코드 기간 설정
-            if lic_type == "7D":
-                expires = now + dt.timedelta(days=7)
-                lic_label = "7일"
-            elif lic_type == "30D":
-                expires = now + dt.timedelta(days=30)
-                lic_label = "30일"
-            elif lic_type == "PERM":
-                expires = None
-                lic_label = "영구"
-            else:
-                expires = now + dt.timedelta(days=1)
-                lic_label = "1회용"
+        lic_type, used_by = row
+        if used_by is not None:
+            return await interaction.response.send_message("❌ 이미 사용된 코드입니다.", ephemeral=True)
 
-            # 유저 라이선스 등록
-            await db.execute(
-                "REPLACE INTO licenses (user_id, code, type, activated_at, expires_at) VALUES (?, ?, ?, ?, ?)",
-                (user_id, code, lic_label, now.isoformat(), expires.isoformat() if expires else None)
-            )
+        # 코드 기간 설정
+        if lic_type == "7D":
+            expires = now + dt.timedelta(days=7)
+            lic_label = "7일"
+        elif lic_type == "30D":
+            expires = now + dt.timedelta(days=30)
+            lic_label = "30일"
+        elif lic_type == "PERM":
+            expires = None
+            lic_label = "영구"
+        else:
+            expires = now + dt.timedelta(days=1)
+            lic_label = "1회용"
 
-            # 코드 사용 처리
-            await db.execute(
-                "UPDATE license_codes SET used_by=?, used_at=? WHERE code=?",
-                (user_id, now.isoformat(), code)
-            )
-            await db.commit()
+        # 유저 라이선스 등록
+        cur.execute(
+            "REPLACE INTO licenses (user_id, code, type, activated_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+            (user_id, code, lic_label, now.isoformat(), expires.isoformat() if expires else None)
+        )
+
+        # 코드 사용 처리
+        cur.execute(
+            "UPDATE license_codes SET used_by=?, used_at=? WHERE code=?",
+            (user_id, now.isoformat(), code)
+        )
+        conn.commit()
+        conn.close()
 
         await interaction.response.send_message(f"✅ {lic_label} 라이선스 등록 완료!", ephemeral=True)
 
@@ -122,9 +124,11 @@ class LicenseView(discord.ui.View):
     @discord.ui.button(label="내정보", style=discord.ButtonStyle.blurple, custom_id="myinfo")
     async def myinfo_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         user_id = interaction.user.id
-        async with aiosqlite.connect(DB_PATH) as db:
-            cur = await db.execute("SELECT type, activated_at, expires_at FROM licenses WHERE user_id=?", (user_id,))
-            row = await cur.fetchone()
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT type, activated_at, expires_at FROM licenses WHERE user_id=?", (user_id,))
+        row = cur.fetchone()
+        conn.close()
 
         if not row:
             embed = discord.Embed(title="❌ 라이선스 없음", description="등록된 라이선스가 없습니다.", color=discord.Color.red())
@@ -169,19 +173,20 @@ async def 배너등록(interaction: discord.Interaction):
 
 @bot.tree.command(name="코드생성", description="(관리자 전용) 라이선스 코드를 생성합니다 (7D / 30D / PERM)")
 async def 코드생성(interaction: discord.Interaction, 종류: str):
-    # ✅ 관리자 권한 확인
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("❌ 관리자만 사용할 수 있는 명령어입니다.", ephemeral=True)
 
     code = generate_license(종류.upper())
     now = dt.datetime.utcnow()
 
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "INSERT OR REPLACE INTO license_codes (code, type, created_at, used_by, used_at) VALUES (?, ?, ?, NULL, NULL)",
-            (code, 종류.upper(), now.isoformat())
-        )
-        await db.commit()
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT OR REPLACE INTO license_codes (code, type, created_at, used_by, used_at) VALUES (?, ?, ?, NULL, NULL)",
+        (code, 종류.upper(), now.isoformat())
+    )
+    conn.commit()
+    conn.close()
 
     await interaction.response.send_message(f"✅ 생성된 코드: `{code}`", ephemeral=True)
 
@@ -191,7 +196,7 @@ async def 코드생성(interaction: discord.Interaction, 종류: str):
 # ========================
 @bot.event
 async def on_ready():
-    await init_db()
+    init_db()
     try:
         synced = await bot.tree.sync()
         print(f"✅ 슬래시 명령어 동기화 완료: {len(synced)}개")
